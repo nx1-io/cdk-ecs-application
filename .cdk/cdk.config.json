@@ -1,0 +1,58 @@
+{
+    "name": "project-name",
+    "container": {
+        "port": 8080,
+        "image": {
+            "uri": "xxx.dkr.ecr.ap-southeast-2.amazonaws.com/app"
+        },
+        "buildArgs": {}
+    },
+    "stages": {
+        "env": {
+            "aws": {
+                "account_name": "env",
+                "account": "xxx",
+                "region": "ap-southeast-2"
+            },
+            "ecs": {
+                "cluster_arn": "arn:aws:ecs:ap-southeast-2:xxx:cluster/cluster-name",
+                "clusterSecurityGroupId": "sg-xxx"
+            },
+            "loadBalancer": {
+                "healthcheckPath": "/health"
+            },
+            "route53": {
+                "enable": true,
+                "domain": "env.domain.com",
+                "hostname": "app"
+            },
+            "acm": {
+                "create": false,
+                "arn": "arn:aws:acm:ap-southeast-2:xxx:certificate/xxx"
+            },
+            "secretsManager": [
+                {
+                    "arn": "arn:aws:secretsmanager:ap-southeast-2:xxx:secret:app-xxx",
+                    "variables":
+                    {
+                        "DB_PASSWORD":"DB_PASSWORD",
+                        "DB_USERNAME":"DB_USERNAME",
+                        "DB_HOST":"DB_HOST",
+                        "DB_PORT":"DB_PORT"
+                    }
+                }
+            ],
+            "task": {
+                "desiredCount": 1,
+                "cpu": 256,
+                "memoryLimitMiB": 512,
+                "spot": true
+            },
+            "autoscaling": {
+                "cpuTargetUtilizationPercent": 70,
+                "minCapacity": 1,
+                "maxCapacity": 4
+            }
+        }
+    }
+}
