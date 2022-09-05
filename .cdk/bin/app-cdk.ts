@@ -22,8 +22,6 @@ new EcsDeployStack(app, `EcsDeployStack-${stage}`, {
   stage,
   stackName,
   appName,
-  clusterArn: stageConfig.ecs.cluster_arn,
-  clusterSecurityGroupId: stageConfig.ecs.clusterSecurityGroupId,
   route53: {
     ...stageConfig.route53,
     hostname:
@@ -39,14 +37,11 @@ new EcsDeployStack(app, `EcsDeployStack-${stage}`, {
   },
   container: {
     ...environmentConfig.container,
-    image: {
-      ...environmentConfig.container.image,
-      version: process.env.APP_REVISION,
-    },
   },
   task: stageConfig.task,
   loadBalancer: stageConfig.loadBalancer,
   autoscaling: stageConfig.autoscaling,
+  extraPolicies: stageConfig.extraPolicies,
 });
 
 app.synth();

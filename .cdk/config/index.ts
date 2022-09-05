@@ -31,10 +31,6 @@ export interface ISecretsManager {
 
 export interface IContainer {
   readonly port: number;
-  readonly image: {
-    readonly uri: string;
-    readonly version?: string;
-  };
   readonly buildArgs: {
     [key: string]: string;
   };
@@ -63,9 +59,9 @@ export interface ICloudWatchAlarm {
   readonly datapointsToAlarm?: number;
 }
 
-export interface IEcs {
-  readonly cluster_arn: string;
-  readonly clusterSecurityGroupId: string;
+export interface IPolicy {
+  readonly resources: string[];
+  readonly actions: string[];
 }
 
 export interface IStages {
@@ -78,7 +74,7 @@ export interface IStages {
     task: ITask;
     autoscaling?: IAutoscaling;
     loadBalancer?: ILoadBalancer;
-    ecs: IEcs;
+    extraPolicies?: IPolicy[];
   };
 }
 
