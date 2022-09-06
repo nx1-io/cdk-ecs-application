@@ -7,7 +7,7 @@ package-lock.json
 # CDK asset staging directory
 .cdk.staging
 cdk.out
-
+cdk.context.json
 
 # IDE
 .vscode

@@ -67,7 +67,7 @@ jobs:
             export APP_REVISION=${{ env.APP_REVISION }}
             export STAGE=dev
             cd .cdk
-            npm run deploy
+            npx cdk deploy
             echo ::set-output name=env_url::"$(jq -r '.[] | with_entries(select(.key | startswith("ServiceServiceURL"))) | .[]' cdk.out.json)"
 
       - name: update the github deployment status
