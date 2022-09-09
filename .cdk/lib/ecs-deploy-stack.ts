@@ -3,13 +3,12 @@ import { Construct } from "constructs";
 import * as path from "path";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as ecsPatterns from "aws-cdk-lib/aws-ecs-patterns";
 import * as route53 from "aws-cdk-lib/aws-route53";
-import * as route53_targets from "aws-cdk-lib/aws-route53-targets";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ecrAssets from "aws-cdk-lib/aws-ecr-assets";
-import * as ecrdeploy from "cdk-ecr-deployment";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import {
@@ -22,14 +21,13 @@ import {
   IAutoscaling,
   ILoadBalancer,
   ITask,
+  IPolicy,
 } from "../config";
 
 export interface EcsDeployStackProps extends StackProps {
   stage: string;
   stackName: string;
   appName: string;
-  clusterArn: string;
-  clusterSecurityGroupId: string;
   vpc: IVpc;
   route53: IRoute53;
   secretsManager?: ISecretsManager[];
@@ -37,13 +35,14 @@ export interface EcsDeployStackProps extends StackProps {
   task: ITask;
   autoscaling?: IAutoscaling;
   loadBalancer?: ILoadBalancer;
-  acm: IAcm;
+  acm?: IAcm;
   cloudWatchAlarm?: {
     cpu: ICloudWatchAlarm;
     memory: ICloudWatchAlarm;
     taskCount: ICloudWatchAlarm;
     errorFromLog: ICloudWatchAlarm;
   };
+  extraPolicies?: IPolicy[];
 }
 
 export class EcsDeployStack extends Stack {
@@ -60,19 +59,10 @@ export class EcsDeployStack extends Stack {
     // Full domain name for the application Eg: <www>.<api.com>
     const fullDomainName = `${props.route53.hostname}.${props.route53.domain}`;
 
-    // Docker image name
-    const destImage = `${props.container.image.uri}:${props.container.image.version || "latest"}`;
-
     // Build Docker image
     const srcImage = new ecrAssets.DockerImageAsset(this, "DockerImage", {
       directory: path.join(__dirname, "../../"),
       buildArgs: props.container.buildArgs
-    });
-
-    // Push Docker image to ECR Repository
-    new ecrdeploy.ECRDeployment(this, "DeployDockerImage", {
-      src: new ecrdeploy.DockerImageName(srcImage.imageUri),
-      dest: new ecrdeploy.DockerImageName(destImage),
     });
 
     // Retrieving VPC information
@@ -83,8 +73,8 @@ export class EcsDeployStack extends Stack {
 
     // Retrieving the hosted zone
     const hostedZone = route53.HostedZone.fromLookup(this, "HostedZone", {
-          domainName: props.route53.domain!,
-        })
+      domainName: props.route53.domain!,
+    })
 
     // Retrieving ACM certificate or Create
     const certificate = this.getAcmCertificate(
@@ -93,122 +83,88 @@ export class EcsDeployStack extends Stack {
       fullDomainName,
       props.acm?.arn
     );
-    const listenerCertificate = elbv2.ListenerCertificate.fromArn(props.acm.arn);
 
-
-
-    // Application load balancer
-    const alb = new elbv2.ApplicationLoadBalancer(
+    // Creating ECS Services resources
+    const loadBalancedFargateService = new ecsPatterns.ApplicationLoadBalancedFargateService(
       this,
-      `alb`,
+      "Service",
       {
         vpc,
-        vpcSubnets: { subnets: vpc.publicSubnets },
-        internetFacing: true
+        protocol: elbv2.ApplicationProtocol[protocol],
+        desiredCount: props.task.desiredCount || 1,
+        cpu: props.task.cpu || 256,
+        memoryLimitMiB: props.task.memoryLimitMiB || 512,
+        publicLoadBalancer: true,
+        enableECSManagedTags: true,
+        certificate: certificate || undefined,
+        domainZone: hostedZone || undefined,
+        domainName: hostedZone && fullDomainName,
+        circuitBreaker: {
+          rollback: true,
+        },
+        taskSubnets: {
+          subnets: [...vpc.privateSubnets],
+        },
+        taskImageOptions: {
+          containerPort: props.container.port || 80,
+          image: ecs.ContainerImage.fromRegistry(srcImage.imageUri),
+          secrets: props.secretsManager && this.generateSecretList(props.secretsManager!),
+        },
+        enableExecuteCommand: true,
       }
     );
 
-
-    // Target group to make resources containers dicoverable by the application load balencer
-    const targetGroupHttp = new elbv2.ApplicationTargetGroup(
-      this,
-      "target-group",
-      {
-        port: props.container.port || 80,
-        vpc,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-        targetType: elbv2.TargetType.IP,
-      }
-    );
-
-    // Health check for containers to check they were deployed correctly
-    targetGroupHttp.configureHealthCheck({
+    // Healthcheck
+    loadBalancedFargateService.targetGroup.configureHealthCheck({
       path: props.loadBalancer?.healthcheckPath || "/",
-      protocol: elbv2.Protocol.HTTP,
     });
-
-
-    // only allow HTTPS connections
-    const listener = alb.addListener("alb-listener", {
-      open: true,
-      port: 443,
-      certificates: [ listenerCertificate ],
-    });
-
-    listener.addTargetGroups("alb-listener-target-group", {
-      targetGroups: [targetGroupHttp],
-    });
-
-    // use a security group to provide a secure connection between the ALB and the containers
-    const albSG = new ec2.SecurityGroup(this, "alb-SG", {
-      vpc,
-      allowAllOutbound: true,
-    });
-
-    albSG.addIngressRule(
-      ec2.Peer.anyIpv4(),
-      ec2.Port.tcp(443),
-      "Allow https traffic"
+    loadBalancedFargateService.targetGroup.setAttribute(
+      "deregistration_delay.timeout_seconds",
+      "60"
     );
 
-    alb.addSecurityGroup(albSG);
+    // Fargate Spot
+    if (props.task.spot) {
+      const cfnService = loadBalancedFargateService.service.node.tryFindChild(
+        "Service"
+      ) as ecs.CfnService;
+      cfnService.launchType = undefined;
+      cfnService.capacityProviderStrategy = [
+        {
+          capacityProvider: "FARGATE_SPOT",
+          weight: 4,
+        },
+        {
+          capacityProvider: "FARGATE",
+          weight: 1,
+        },
+      ];
+    }
 
-    // Retriving Security Groups
-    const clusterSecurityGroup = ec2.SecurityGroup.fromSecurityGroupId(this, "ClusterSecurityGroup", props.clusterSecurityGroupId)
-
-    // Retrieving the ecs cluster
-
-    const cluster = ecs.Cluster.fromClusterAttributes(this, 'Cluster', {
-      vpc: vpc,
-      securityGroups:[clusterSecurityGroup],
-      clusterName: 'dev-apps',
-      clusterArn: props.clusterArn
-    });
-    const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDefinition', {
-      cpu: props.task.cpu || 256,
-      memoryLimitMiB: props.task.memoryLimitMiB || 512
-
-    });
-
-    const container = taskDefinition.addContainer('Container', {
-      image: ecs.ContainerImage.fromRegistry(destImage),
-      secrets: props.secretsManager && this.generateSecretList(props.secretsManager!),
-      logging: ecs.LogDriver.awsLogs({ streamPrefix: "webserver-service-logs" }),
-    });
-    container.addPortMappings({containerPort: props.container.port || 80})
-
-
-    // Instantiate an Amazon ECS Service
-    const ecsService = new ecs.FargateService(this, 'Service', {
-      cluster,
-      taskDefinition,
-      circuitBreaker: {
-        rollback: true,
-      },
-      vpcSubnets: {
-        subnets: [...vpc.privateSubnets],
-      },
-      assignPublicIp: false,
-      desiredCount: props.task.desiredCount || 1,
-      securityGroups: [clusterSecurityGroup]
-    });
-
-    // add to a target group so make containers discoverable by the application load balancer
-    ecsService.attachToApplicationTargetGroup(targetGroupHttp);
-
-
-    // Autoscaling based on memory and CPU usage
-    const scalableTaget = ecsService.autoScaleTaskCount({
+    // Auto Scalling
+    const scalableTarget = loadBalancedFargateService.service.autoScaleTaskCount({
       minCapacity: props.autoscaling?.minCapacity || 1,
-      maxCapacity: props.autoscaling?.maxCapacity || 4,
+      maxCapacity: props.autoscaling?.maxCapacity || 8,
     });
 
-    scalableTaget.scaleOnCpuUtilization("ScaleUpCPU", {
-      targetUtilizationPercent: props.autoscaling?.cpuTargetUtilizationPercent || 80
+    scalableTarget.scaleOnCpuUtilization("CpuScaling", {
+      targetUtilizationPercent: props.autoscaling?.cpuTargetUtilizationPercent || 80,
     });
+
+    if (props.extraPolicies) {
+      props.extraPolicies.forEach((extraPolicy: IPolicy) => {
+        loadBalancedFargateService.taskDefinition.addToTaskRolePolicy(
+          new iam.PolicyStatement({
+            resources: extraPolicy["resources"],
+            actions: extraPolicy["actions"],
+            effect: iam.Effect.ALLOW,
+          })
+        );
+      });
+    }
 
     // Include permissions to ECR
-    ecsService.taskDefinition.addToExecutionRolePolicy(
+    loadBalancedFargateService.taskDefinition.addToExecutionRolePolicy(
       new iam.PolicyStatement({
         resources: ["*"],
         actions: ["ecr:*"],
@@ -216,18 +172,11 @@ export class EcsDeployStack extends Stack {
       })
     );
 
-    // Route traffic hitting   to the Application Load Balancer
-    new route53.ARecord(this, 'WebServerDomainToLoadBalancer', {
-      recordName: 'webserver',
-      zone: hostedZone,
-      target: route53.RecordTarget.fromAlias(new route53_targets.LoadBalancerTarget(alb)),
-    });
-
-
     // Alarms
 
     // ALARM CPU UTILIZATION
-    ecsService.metricCpuUtilization()
+    loadBalancedFargateService.service
+      .metricCpuUtilization()
       .createAlarm(this, "AlarmCpuUtilization", {
         alarmName: `Alarm${props.stackName}CpuUtilization`,
         threshold: props.cloudWatchAlarm?.cpu.alarmThreshold || 60,
@@ -241,7 +190,8 @@ export class EcsDeployStack extends Stack {
       });
 
     // ALARM MEMORY UTILIZATION
-    ecsService.metricMemoryUtilization()
+    loadBalancedFargateService.service
+      .metricMemoryUtilization()
       .createAlarm(this, "AlarmMemoryUtilization", {
         alarmName: `Alarm${props.stackName}MemoryUtilization`,
         threshold: props.cloudWatchAlarm?.memory.alarmThreshold || 75,
@@ -254,7 +204,8 @@ export class EcsDeployStack extends Stack {
       });
 
     // ALARM ECS RUNNING TASK
-    ecsService.metric("RunningTaskCount")
+    loadBalancedFargateService.service
+      .metric("RunningTaskCount")
       .createAlarm(this, "AlarmRunningTaskCount", {
         alarmName: `AlarmAlarm${props.stackName}RunningTaskCount`,
         threshold: props.autoscaling?.minCapacity || 1,
@@ -264,7 +215,6 @@ export class EcsDeployStack extends Stack {
         } for service ${props.appName}`,
         comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       });
-
 
     // CLOUDWATCH DASHBOARD
     const dashboard = new cloudwatch.Dashboard(this, "Dashboard");
@@ -278,12 +228,12 @@ export class EcsDeployStack extends Stack {
       new cloudwatch.GraphWidget({
         title: "Requests",
         width: 9,
-        left: [alb.metricRequestCount()],
+        left: [loadBalancedFargateService.loadBalancer.metricRequestCount()],
       }),
       new cloudwatch.GraphWidget({
         title: "Latency",
         width: 9,
-        left: [alb.metricTargetResponseTime()],
+        left: [loadBalancedFargateService.loadBalancer.metricTargetResponseTime()],
       })
     );
     dashboard.addWidgets(
@@ -296,12 +246,12 @@ export class EcsDeployStack extends Stack {
       new cloudwatch.GraphWidget({
         title: "Cpu Utilization",
         width: 9,
-        left: [ecsService.metricCpuUtilization()],
+        left: [loadBalancedFargateService.service.metricCpuUtilization()],
       }),
       new cloudwatch.GraphWidget({
         title: "Memory Utilization",
         width: 9,
-        left: [ecsService.metricMemoryUtilization()],
+        left: [loadBalancedFargateService.service.metricMemoryUtilization()],
       })
     );
 

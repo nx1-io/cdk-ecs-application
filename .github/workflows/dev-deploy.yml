@@ -1,0 +1,81 @@
+name: "Dev Deploy"
+
+on:
+  push:
+    branches: [ "feature/deployment" ]
+
+permissions:
+  id-token: write
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: inject slug/short variables
+        uses: rlespinasse/github-slug-action@v3.x
+
+      - name: set APP_REVISION variable in environment for next steps
+        run: echo "APP_REVISION=${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: checkout the files
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: create a github deployment
+        uses: bobheadxi/deployments@v0.5.2
+        id: deployment
+        with:
+          step: start
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env: dev
+          ref: ${{ github.head_ref }}
+          no_override: false
+          transient: true
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::932213710980:role/githubAccess
+          role-session-name: github-deploy
+          aws-region: ap-southeast-1
+
+      - name: Check AWS credentials
+        run: |
+          aws sts get-caller-identity
+
+      - name: Configure Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: install node dependencies
+        run: cd .cdk ; npm install
+
+      - name: Diff
+        run: |
+          export APP_REVISION=${{ env.APP_REVISION }}
+          export STAGE=dev
+          cd .cdk
+          npx cdk diff
+
+      - name: Deploy
+        id: cdk_deploy
+        run: |
+            export APP_REVISION=${{ env.APP_REVISION }}
+            export STAGE=dev
+            cd .cdk
+            npx cdk deploy
+            echo ::set-output name=env_url::"$(jq -r '.[] | with_entries(select(.key | startswith("ServiceServiceURL"))) | .[]' cdk.out.json)"
+
+      - name: update the github deployment status
+        uses: bobheadxi/deployments@v0.5.2
+        if: always()
+        with:
+          step: finish
+          token: ${{ secrets.GITHUB_TOKEN }}
+          status: ${{ job.status }}
+          deployment_id: ${{ steps.deployment.outputs.deployment_id }}
+          env_url: ${{ steps.cdk_deploy.outputs.env_url }}
