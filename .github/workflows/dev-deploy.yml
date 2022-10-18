@@ -2,7 +2,7 @@ name: "Dev Deploy"
 
 on:
   push:
-    branches: [ "feature/deployment" ]
+    branches: [ "main", "feature/deployment" ]
 
 permissions:
   id-token: write
