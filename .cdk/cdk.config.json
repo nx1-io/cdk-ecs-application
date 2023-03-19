@@ -19,7 +19,7 @@
             },
             "route53": {
                 "enable": true,
-                "domain": "demo1.dnx.one",
+                "domain": "bubbletea.demo.citadel.run",
                 "hostname": "myapp"
             },
             "acm": {
