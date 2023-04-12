@@ -42,6 +42,7 @@ new EcsDeployStack(app, `EcsDeployStack-${stage}`, {
   loadBalancer: stageConfig.loadBalancer,
   autoscaling: stageConfig.autoscaling,
   extraPolicies: stageConfig.extraPolicies,
+  customTags: stageConfig.customTags,
 });
 
 app.synth();

@@ -75,6 +75,7 @@ export interface IStages {
     autoscaling?: IAutoscaling;
     loadBalancer?: ILoadBalancer;
     extraPolicies?: IPolicy[];
+    customTags?: ICustomTags;
   };
 }
 
@@ -82,6 +83,11 @@ export interface IEnvironmentConfig {
   readonly name: string;
   readonly container: IContainer;
   readonly stages: IStages;
+}
+
+export interface ICustomTags {
+  readonly key: string;
+  readonly value: string;
 }
 
 const Environment: IEnvironmentConfig = configGLobal;

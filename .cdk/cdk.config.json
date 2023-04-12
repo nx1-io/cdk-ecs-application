@@ -8,7 +8,7 @@
         "dev": {
             "aws": {
                 "account_name": "dev",
-                "account": "932213710980",
+                "account": "678158624205",
                 "region": "ap-southeast-1"
             },
             "vpc": {
@@ -36,6 +36,10 @@
                 "cpuTargetUtilizationPercent": 70,
                 "minCapacity": 1,
                 "maxCapacity": 4
+            },
+            "customTags": {
+                "key": "deployedBy",
+                "value": "citadel_blueprint"
             }
         }
     }

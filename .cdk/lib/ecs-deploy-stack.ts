@@ -22,6 +22,7 @@ import {
   ILoadBalancer,
   ITask,
   IPolicy,
+  ICustomTags,
 } from "../config";
 
 export interface EcsDeployStackProps extends StackProps {
@@ -43,6 +44,7 @@ export interface EcsDeployStackProps extends StackProps {
     errorFromLog: ICloudWatchAlarm;
   };
   extraPolicies?: IPolicy[];
+  customTags?: ICustomTags;
 }
 
 export class EcsDeployStack extends Stack {
@@ -258,6 +260,7 @@ export class EcsDeployStack extends Stack {
     // Tagging all resources in the stack
     Tags.of(this).add("Application", props.appName);
     Tags.of(this).add("Environment", props.stage);
+    props.customTags && Tags.of(this).add(props.customTags?.key, props.customTags?.value);
   }
 
   // Generate Secret list that will be inject in the container
